@@ -20,8 +20,8 @@ function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
   // UI State
-  const [activeTab, setActiveTab] = useState<TabType>('image');
-  const [webhookUrl, setWebhookUrl] = useState('https://management-mind-sheet-processed.trycloudflare.com/api/webhook');
+  const [activeTab, setActiveTab] = useState<TabType>('image-v3');
+  const [webhookUrl, setWebhookUrl] = useState('https://restaurant-site-highlights-clinic.trycloudflare.com/api/webhook');
   const [isBalanceLoading, setIsBalanceLoading] = useState(false);
   const [credit, setCredit] = useState<number | null>(null);
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -97,7 +97,7 @@ function App() {
 
   // Image Swap Handler
   const handleImageSwap = async (config: {
-    sourceImage: string;
+    sourceImage: string | string[];
     targetImage: string;
     apiVersion: 'v3' | 'v4';
     faceEnhance: boolean;
@@ -110,9 +110,10 @@ function App() {
     try {
       if (config.apiVersion === 'v4') {
         // V4 Simplified - No face detection
+        const sourceImagePath = Array.isArray(config.sourceImage) ? config.sourceImage[0] : config.sourceImage;
         const swapData = {
           targetImage: [{ path: config.targetImage }],
-          sourceImage: [{ path: config.sourceImage }],
+          sourceImage: [{ path: sourceImagePath }],
           model_name: 'akool_faceswap_image_hq',
           webhookUrl,
           face_enhance: config.faceEnhance,
@@ -121,34 +122,60 @@ function App() {
         await apiService.faceSwapV4Image(swapData, token, authType);
         setStatusMessage('Request sent, waiting for processing...');
       } else {
-        // V3 - With face detection
-        setStatusMessage('Detecting faces...');
+        // V3 - With face detection for multi-face support
+        setStatusMessage('Detecting faces in images...');
         
-        const [sourceDetection, targetDetection] = await Promise.all([
+        const sourceImages = Array.isArray(config.sourceImage) ? config.sourceImage : [config.sourceImage];
+        
+        // Detect faces in all source images and target image
+        const detectionPromises = [
+          ...sourceImages.map(img => 
+            apiService.detectFace(
+              { single_face: false, image_url: img },
+              token,
+              authType
+            )
+          ),
           apiService.detectFace(
-            { single_face: config.singleFace, image_url: config.sourceImage },
+            { single_face: false, image_url: config.targetImage },
             token,
             authType
           ),
-          apiService.detectFace(
-            { single_face: config.singleFace, image_url: config.targetImage },
-            token,
-            authType
-          ),
-        ]);
+        ];
 
-        const sourceData = sourceDetection as { landmarks_str: string };
-        const targetData = targetDetection as { landmarks_str: string };
+        const detectionResults = await Promise.all(detectionPromises);
+        
+        // Extract landmarks for sources and target
+        const sourceLandmarks = detectionResults.slice(0, -1).map(result => {
+          const data = result as { landmarks_str: string | string[] };
+          return Array.isArray(data.landmarks_str) ? data.landmarks_str[0] : data.landmarks_str;
+        });
+        
+        const targetData = detectionResults[detectionResults.length - 1] as { landmarks_str: string | string[] };
+        const targetLandmarks = Array.isArray(targetData.landmarks_str) 
+          ? targetData.landmarks_str 
+          : [targetData.landmarks_str];
 
-        if (!sourceData.landmarks_str || !targetData.landmarks_str) {
-          throw new Error('Face detection failed - no landmarks found');
+        // Validate we have matching counts
+        if (sourceLandmarks.length !== targetLandmarks.length) {
+          throw new Error(
+            `Mismatch: ${sourceLandmarks.length} source face(s) but ${targetLandmarks.length} target face(s). ` +
+            `Please provide ${targetLandmarks.length} source image(s).`
+          );
         }
 
         setStatusMessage('Faces detected, starting swap...');
 
+        // Build arrays with one-to-one mapping
         const swapData = {
-          sourceImage: [{ path: config.sourceImage, opts: sourceData.landmarks_str }],
-          targetImage: [{ path: config.targetImage, opts: targetData.landmarks_str }],
+          sourceImage: sourceImages.map((path, i) => ({ 
+            path, 
+            opts: sourceLandmarks[i] 
+          })),
+          targetImage: targetLandmarks.map((opts, i) => ({ 
+            path: config.targetImage, 
+            opts 
+          })),
           face_enhance: config.faceEnhance ? 1 : 0,
           modifyImage: config.targetImage,
           webhookUrl,
@@ -223,22 +250,19 @@ function App() {
   // Tabs configuration
   const tabs = [
     {
-      id: 'image' as TabType,
-      label: 'Image Face Swap',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
-      ),
+      id: 'image-v3' as TabType,
+      label: 'Image v3 High Quality',
+      description: 'face detection • multi-face',
     },
     {
-      id: 'video' as TabType,
-      label: 'Video Face Swap',
-      icon: (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-        </svg>
-      ),
+      id: 'image-v4' as TabType,
+      label: 'Image v4 Simplified',
+      description: 'no detection • single-face',
+    },
+    {
+      id: 'video-v3' as TabType,
+      label: 'Video v3',
+      description: 'face detection • multi-face',
     },
   ];
 
@@ -253,12 +277,25 @@ function App() {
       <div className="space-y-6">
         <Tabs tabs={tabs} activeTab={activeTab} onChange={(id) => setActiveTab(id as TabType)} />
 
-        {activeTab === 'image' ? (
+        {activeTab === 'image-v3' ? (
           <ImageSwap
+            apiVersion="v3"
             onSwap={handleImageSwap}
             webhookUrl={webhookUrl}
             onWebhookChange={setWebhookUrl}
             isLoading={isProcessing}
+            token={token}
+            authType={authType}
+          />
+        ) : activeTab === 'image-v4' ? (
+          <ImageSwap
+            apiVersion="v4"
+            onSwap={handleImageSwap}
+            webhookUrl={webhookUrl}
+            onWebhookChange={setWebhookUrl}
+            isLoading={isProcessing}
+            token={token}
+            authType={authType}
           />
         ) : (
           <VideoSwap

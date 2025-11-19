@@ -33,18 +33,6 @@ export const VideoSwap: React.FC<VideoSwapProps> = ({
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      {/* Description */}
-      <Card className="p-3 sm:p-4 border-green-500/30 bg-green-500/5">
-        <div className="flex items-center justify-center gap-2 text-green-400 flex-wrap">
-          <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-          </svg>
-          <p className="text-xs sm:text-sm font-medium text-center">
-            VIDEO SUPPORTED • v3 only • Face detection required • Multi-face support
-          </p>
-        </div>
-      </Card>
-
       <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
         {/* Webhook URL */}
         <Input
@@ -80,7 +68,7 @@ export const VideoSwap: React.FC<VideoSwapProps> = ({
                 />
               </div>
               {sourceImage && (
-                <div className="flex-shrink-0 w-16 h-16">
+                <div className="flex-shrink-0 w-20 h-20">
                   <div className="relative w-full h-full overflow-hidden rounded-lg bg-gray-800 border border-gray-700">
                     <img
                       src={sourceImage}
@@ -124,7 +112,7 @@ export const VideoSwap: React.FC<VideoSwapProps> = ({
                 />
               </div>
               {targetImage && (
-                <div className="flex-shrink-0 w-16 h-16">
+                <div className="flex-shrink-0 w-20 h-20">
                   <div className="relative w-full h-full overflow-hidden rounded-lg bg-gray-800 border border-gray-700">
                     <img
                       src={targetImage}

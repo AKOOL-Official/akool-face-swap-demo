@@ -49,7 +49,7 @@ export const AuthForm: React.FC<AuthFormProps> = ({ onAuth, isLoading }) => {
                 : 'text-gray-400 hover:text-white'
             }`}
           >
-            API Key
+            X-API Key
           </button>
           <button
             onClick={() => setAuthMethod('credentials')}
