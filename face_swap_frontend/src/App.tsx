@@ -1,769 +1,301 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import './App.css';
-import { io } from 'socket.io-client';
+import { useState, useEffect } from 'react';
+import { Container } from './components/layout/Container';
+import { Header } from './components/layout/Header';
+import { Tabs } from './components/ui/Tabs';
+import { Modal } from './components/ui/Modal';
+import { AuthForm } from './components/features/AuthForm';
+import { ImageSwap } from './components/features/ImageSwap';
+import { VideoSwap } from './components/features/VideoSwap';
+import { ResultModal } from './components/features/ResultModal';
+import { StatusDisplay } from './components/features/StatusDisplay';
+import { apiService } from './services/api';
+import { useWebSocket } from './hooks/useWebSocket';
+import { AuthMethod, AuthType, TabType } from './types';
 
 function App() {
+  // Auth State
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [token, setToken] = useState('');
-  const [isSubmitted, setIsSubmitted] = useState(false);
-  const [activeTab, setActiveTab] = useState('image');
-  const [credit, setCredit] = useState<number | null>(null);
-  const [showPopup, setShowPopup] = useState(false);
-  const [targetImage, setTargetImage] = useState<string>("");
-  const [sourceImage, setSourceImage] = useState<string>("");
-  const [isSingleFace, setIsSingleFace] = useState(true);
-  const [isLoading, setIsLoading] = useState(false);
-  const [targetImageType, setTargetImageType] = useState<'file' | 'url'>('url');
-  const [sourceImageType, setSourceImageType] = useState<'file' | 'url'>('url');
-  const [targetDetectionResult, setTargetDetectionResult] = useState(null);
-  const [sourceDetectionResult, setSourceDetectionResult] = useState(null);
-  const [faceEnhance, setFaceEnhance] = useState(false);
-  const [swapResult, setSwapResult] = useState<string | null>(null);
-  const [swapStatus, setSwapStatus] = useState<string>('');
-  const [showResultPopup, setShowResultPopup] = useState(false);
-  const [videoFaceEnhance, setVideoFaceEnhance] = useState(true);
-  // const [targetVideo, setTargetVideo] = useState<string>("https://static.website-files.org/assets/videos/faceswap/gallery/dance/a0597d74-dd0f-40c1-920e-45bdf180955c.mp4");
-  const [targetVideo, setTargetVideo] = useState<string>("https://static.website-files.org/assets/videos/faceswap/Video10__d2a8cf85-10ae-4c2d-8f4b-d818c0a2e4a4.mp4");
-  const [videoResult, setVideoResult] = useState<string | null>(null);
-  const [showVideoResultPopup, setShowVideoResultPopup] = useState(false);
-  const [authMethod, setAuthMethod] = useState<'token' | 'credentials'>('token');
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
+  const [authType, setAuthType] = useState<AuthType>('apikey');
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+
+  // UI State
+  const [activeTab, setActiveTab] = useState<TabType>('image');
+  const [webhookUrl, setWebhookUrl] = useState('https://management-mind-sheet-processed.trycloudflare.com/api/webhook');
   const [isBalanceLoading, setIsBalanceLoading] = useState(false);
+  const [credit, setCredit] = useState<number | null>(null);
+  const [showCreditModal, setShowCreditModal] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (authMethod === 'credentials') {
-      handleCredentialsSubmit();
-    } else {
-      setIsSubmitted(true);
+  // Processing State
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [showResultModal, setShowResultModal] = useState(false);
+
+  // WebSocket
+  const { status: wsStatus } = useWebSocket('http://localhost:3008');
+
+  // Handle WebSocket status updates
+  useEffect(() => {
+    if (!wsStatus) return;
+
+    setIsProcessing(wsStatus.status !== 3 && wsStatus.status !== 4);
+    setStatusMessage(wsStatus.message);
+
+    if (wsStatus.type === 'error') {
+      alert(wsStatus.message);
+      setIsProcessing(false);
     }
-  };
 
-  const handleCredentialsSubmit = async () => {
+    if (wsStatus.status === 3 && wsStatus.data?.url) {
+      setResultUrl(wsStatus.data.url);
+      setShowResultModal(true);
+      setIsProcessing(false);
+    }
+  }, [wsStatus]);
+
+  // Authentication Handler
+  const handleAuth = async (
+    tokenValue: string,
+    method: AuthMethod,
+    clientId?: string,
+    clientSecret?: string
+  ) => {
+    setIsAuthLoading(true);
     try {
-      const response = await axios.post('https://openapi.akool.com/api/open/v3/getToken', {
-        clientId,
-        clientSecret
-      });
-      
-      setToken(response.data.token);
-      setIsSubmitted(true);
+      if (method === 'credentials' && clientId && clientSecret) {
+        const response = await apiService.getToken(clientId, clientSecret);
+        setToken(response.data.token);
+        setAuthType('bearer');
+      } else {
+        setToken(tokenValue);
+        setAuthType('apikey');
+      }
+      setIsAuthenticated(true);
     } catch (error) {
-      console.error('Error getting token:', error);
-      alert('Failed to authenticate with provided credentials');
+      console.error('Authentication failed:', error);
+      alert('Authentication failed. Please check your credentials.');
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
-  const checkTokenBalance = async () => {
+  // Check Balance Handler
+  const handleCheckBalance = async () => {
     setIsBalanceLoading(true);
     try {
-      const response = await axios.get('https://openapi.akool.com/api/open/v3/faceswap/quota/info', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      setCredit(response.data.data.credit);
-      setShowPopup(true);
+      const response = await apiService.getQuotaInfo(token, authType) as { data: { credit: number } };
+      setCredit(response.data.credit);
+      setShowCreditModal(true);
     } catch (error) {
-      console.error('Error fetching token balance:', error);
+      console.error('Failed to fetch balance:', error);
+      alert('Failed to fetch balance');
     } finally {
       setIsBalanceLoading(false);
     }
   };
 
-  const convertFileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result);
-        }
-      };
-      reader.onerror = error => reject(error);
-    });
-  };
+  // Image Swap Handler
+  const handleImageSwap = async (config: {
+    sourceImage: string;
+    targetImage: string;
+    apiVersion: 'v3' | 'v4';
+    faceEnhance: boolean;
+    singleFace: boolean;
+  }) => {
+    setIsProcessing(true);
+    setStatusMessage('Starting face swap process...');
+    setResultUrl(null);
 
-  const detectFace = async (image: File | string, type: 'file' | 'url') => {
     try {
-      let requestBody: any = {
-        single_face: isSingleFace,
-        face_enhance: faceEnhance ? 1 : 0
-      };
+      if (config.apiVersion === 'v4') {
+        // V4 Simplified - No face detection
+        const swapData = {
+          targetImage: [{ path: config.targetImage }],
+          sourceImage: [{ path: config.sourceImage }],
+          model_name: 'akool_faceswap_image_hq',
+          webhookUrl,
+          face_enhance: config.faceEnhance,
+        };
 
-      if (type === 'file' && image instanceof File) {
-        const base64Data = await convertFileToBase64(image);
-        requestBody.img = base64Data;
-      } else if (type === 'url' && typeof image === 'string') {
-        requestBody.image_url = image;
-      }
-
-      const response = await axios.post('https://sg3.akool.com/detect', requestBody, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      return response.data;
-    } catch (error) {
-      console.error('Error detecting face:', error);
-      throw error;
-    }
-  };
-
-  useEffect(() => {
-    // Initialize socket connection when component mounts
-    const socket = io('http://localhost:3008', {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      timeout: 10000,
-      autoConnect: true,
-    });
-
-    // Connection event handlers
-    socket.on('connect', () => {
-      console.log('WebSocket connected successfully');
-    });
-
-    socket.on('connect_error', (error) => {
-      console.error('Connection Error:', error);
-      // Attempt to reconnect
-      setTimeout(() => {
-        socket.connect();
-      }, 1000);
-    });
-
-    socket.on('disconnect', (reason) => {
-      console.log('Disconnected:', reason);
-      if (reason === 'io server disconnect') {
-        // Reconnect if server disconnected
-        socket.connect();
-      }
-    });
-
-    socket.on('faceswap_status', (message) => {
-      console.log('Received status update:', message);
-      
-      setIsLoading(message.status !== 3 && message.status !== 4);
-      
-      if (message.type === 'error') {
-        alert(message.message);
-        setSwapStatus('Failed');
+        await apiService.faceSwapV4Image(swapData, token, authType);
+        setStatusMessage('Request sent, waiting for processing...');
       } else {
-        setSwapStatus(message.message);
-        if (message.status === 3 && message.data.url) {
-          // Check if the URL ends with a video extension
-          const isVideo = /\.(mp4|mov|avi|wmv|flv|mkv)$/i.test(message.data.url);
-          
-          if (isVideo) {
-            setVideoResult(message.data.url);
-            setShowVideoResultPopup(true);
-          } else {
-            setSwapResult(message.data.url);
-            setShowResultPopup(true);
-          }
+        // V3 - With face detection
+        setStatusMessage('Detecting faces...');
+        
+        const [sourceDetection, targetDetection] = await Promise.all([
+          apiService.detectFace(
+            { single_face: config.singleFace, image_url: config.sourceImage },
+            token,
+            authType
+          ),
+          apiService.detectFace(
+            { single_face: config.singleFace, image_url: config.targetImage },
+            token,
+            authType
+          ),
+        ]);
+
+        const sourceData = sourceDetection as { landmarks_str: string };
+        const targetData = targetDetection as { landmarks_str: string };
+
+        if (!sourceData.landmarks_str || !targetData.landmarks_str) {
+          throw new Error('Face detection failed - no landmarks found');
         }
-      }
-    });
 
-    // Cleanup
-    return () => {
-      if (socket) {
-        socket.disconnect();
-      }
-    };
-  }, []);
+        setStatusMessage('Faces detected, starting swap...');
 
-  const handleSwap = async () => {
-    if (!targetImage || !sourceImage) return;
-    
-    setIsLoading(true);
-    setSwapResult(null);
-    setSwapStatus('Starting process...');
-    
+        const swapData = {
+          sourceImage: [{ path: config.sourceImage, opts: sourceData.landmarks_str }],
+          targetImage: [{ path: config.targetImage, opts: targetData.landmarks_str }],
+          face_enhance: config.faceEnhance ? 1 : 0,
+          modifyImage: config.targetImage,
+          webhookUrl,
+        };
+
+        await apiService.faceSwapV3Image(swapData, token, authType);
+        setStatusMessage('Request sent, waiting for processing...');
+      }
+    } catch (error) {
+      console.error('Face swap failed:', error);
+      setStatusMessage(error instanceof Error ? error.message : 'Face swap failed');
+      setIsProcessing(false);
+    }
+  };
+
+  // Video Swap Handler
+  const handleVideoSwap = async (config: {
+    sourceImage: string;
+    targetImage: string;
+    targetVideo: string;
+    faceEnhance: boolean;
+  }) => {
+    setIsProcessing(true);
+    setStatusMessage('Starting video face swap...');
+    setResultUrl(null);
+
     try {
-      // First detect faces in both images
-      const targetResult = await detectFace(targetImage, targetImageType);
-      const sourceResult = await detectFace(sourceImage, sourceImageType);
-      
-      setTargetDetectionResult(targetResult);
-      setSourceDetectionResult(sourceResult);
+      setStatusMessage('Detecting faces...');
 
-      // Validate face detection results
-      if (!targetResult.landmarks_str || !sourceResult.landmarks_str) {
-        throw new Error('No face landmarks detected in one or both images');
-      }
+      const [sourceDetection, targetDetection] = await Promise.all([
+        apiService.detectFace(
+          { single_face: false, image_url: config.sourceImage },
+          token,
+          authType
+        ),
+        apiService.detectFace(
+          { single_face: false, image_url: config.targetImage },
+          token,
+          authType
+        ),
+      ]);
 
-      // Get the correct image paths based on image type
-      let targetPath = targetImageType === 'url' ? targetImage as string : targetResult.origin_url;
-      let sourcePath = sourceImageType === 'url' ? sourceImage as string : sourceResult.origin_url;
+      const sourceData = sourceDetection as { landmarks_str: string | string[] };
+      const targetData = targetDetection as { landmarks_str: string | string[] };
 
-      // If the image is a file, convert it to base64
-      if (targetImageType === 'file' && targetImage instanceof File) {
-        targetPath = await convertFileToBase64(targetImage);
-      }
-      if (sourceImageType === 'file' && sourceImage instanceof File) {
-        sourcePath = await convertFileToBase64(sourceImage);
-      }
+      const sourceOpts = Array.isArray(sourceData.landmarks_str)
+        ? sourceData.landmarks_str[0]
+        : sourceData.landmarks_str;
+      const targetOpts = Array.isArray(targetData.landmarks_str)
+        ? targetData.landmarks_str[0]
+        : targetData.landmarks_str;
 
-      // Prepare the data for face swap API with correct format
-      const faceSwapData = {
-        sourceImage: [{
-          path: sourcePath,
-          opts: sourceResult.landmarks_str
-        }],
-        targetImage: [{
-          path: targetPath,
-          opts: targetResult.landmarks_str
-        }],
-        face_enhance: faceEnhance ? 1 : 0,
-        modifyImage: targetPath,
-        webhookUrl: "https://d4dd-219-91-134-123.ngrok-free.app/api/webhook"
+      setStatusMessage('Faces detected, processing video...');
+
+      const swapData = {
+        sourceImage: [{ path: config.sourceImage, opts: sourceOpts }],
+        targetImage: [{ path: config.targetImage, opts: targetOpts }],
+        face_enhance: config.faceEnhance ? 1 : 0,
+        modifyVideo: config.targetVideo,
+        webhookUrl,
       };
 
-      console.log('Face swap data:', faceSwapData); // Debug log
-
-      const faceSwapResponse = await axios.post(
-        'https://openapi.akool.com/api/open/v3/faceswap/highquality/specifyimage',
-        faceSwapData,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      setSwapStatus('Request sent, waiting for processing...');
-
+      await apiService.faceSwapV3Video(swapData, token, authType);
+      setStatusMessage('Video processing started, this may take a while...');
     } catch (error) {
-      console.error('Error during face swap:', error);
-      setSwapStatus(error instanceof Error ? error.message : 'Failed to initiate face swap');
-      setIsLoading(false);
+      console.error('Video swap failed:', error);
+      setStatusMessage(error instanceof Error ? error.message : 'Video swap failed');
+      setIsProcessing(false);
     }
   };
 
-  const handleVideoSwap = async () => {
-    if (!targetImage || !sourceImage || !targetVideo) return;
-    
-    setIsLoading(true);
-    setSwapResult(null);
-    setSwapStatus('Starting video process...');
-    
-    try {
-      // Get landmarks for source image
-      const sourceResponse = await axios.post('https://sg3.akool.com/detect', {
-        single_face: false,
-        image_url: sourceImage
-      }, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      const sourceLandmarksStr = sourceResponse.data.landmarks_str;
-      
-      // Get landmarks for target image
-      const targetResponse = await axios.post('https://sg3.akool.com/detect', {
-        single_face: false,
-        image_url: targetImage
-      }, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      const targetLandmarksStr = targetResponse.data.landmarks_str;
-      
-      // Make sure landmarks are strings, not arrays
-      const sourceOpts = Array.isArray(sourceLandmarksStr) ? sourceLandmarksStr[0] : sourceLandmarksStr;
-      const targetOpts = Array.isArray(targetLandmarksStr) ? targetLandmarksStr[0] : targetLandmarksStr;
-      
-      // Make the video swap API call with string opts
-      const videoSwapData = {
-        sourceImage: [{
-          path: sourceImage,
-          opts: sourceOpts
-        }],
-        targetImage: [{
-          path: targetImage,
-          opts: targetOpts
-        }],
-        face_enhance: videoFaceEnhance ? 1 : 0,
-        modifyVideo: targetVideo,
-        webhookUrl: "https://d4dd-219-91-134-123.ngrok-free.app/api/webhook"
-      };
+  // Tabs configuration
+  const tabs = [
+    {
+      id: 'image' as TabType,
+      label: 'Image Face Swap',
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      ),
+    },
+    {
+      id: 'video' as TabType,
+      label: 'Video Face Swap',
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        </svg>
+      ),
+    },
+  ];
 
-      console.log(videoSwapData);
-      
-
-      const videoSwapResponse = await axios.post(
-        'https://openapi.akool.com/api/open/v3/faceswap/highquality/specifyvideo',
-        videoSwapData,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      setSwapStatus('Video request sent, waiting for processing...');
-
-    } catch (error) {
-      console.error('Error during video face swap:', error);
-      setSwapStatus(error instanceof Error ? error.message : 'Failed to initiate video face swap');
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (isLoading) {
-      document.body.classList.add('loading');
-    } else {
-      document.body.classList.remove('loading');
-    }
-  }, [isLoading]);
-
-  const handleDownload = async () => {
-    if (!swapResult) return;
-    
-    try {
-      // Create a new image element
-      const img = new Image();
-      img.crossOrigin = "anonymous";  // Try to request with CORS
-      
-      // Create a canvas to draw the image
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      
-      // Return a promise that resolves when the image loads
-      await new Promise((resolve, reject) => {
-        img.onload = () => {
-          // Set canvas size to match image
-          canvas.width = img.width;
-          canvas.height = img.height;
-          
-          // Draw image to canvas
-          ctx?.drawImage(img, 0, 0);
-          
-          try {
-            // Convert canvas to blob and download
-            canvas.toBlob((blob) => {
-              if (blob) {
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'face-swap-result.png';
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-              }
-            }, 'image/png');
-          } catch (err) {
-            reject(err);
-          }
-          resolve(null);
-        };
-        
-        img.onerror = () => {
-          // If CORS fails, try direct download as a fallback
-          const a = document.createElement('a');
-          a.href = swapResult;
-          a.download = 'face-swap-result.png';
-          a.target = '_blank';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          resolve(null);
-        };
-        
-        // Set image source after setting up handlers
-        img.src = swapResult;
-      });
-      
-    } catch (error) {
-      console.error('Error downloading image:', error);
-      // If all else fails, open in new tab
-      window.open(swapResult, '_blank');
-    }
-  };
-
-  // Add effect to update URLs when tab changes
-  useEffect(() => {
-    if (activeTab === 'video') {
-      setTargetImage("https://i.ibb.co/GxHH1J6/source1.png");
-      setSourceImage("https://i.ibb.co/dpFW7fR/bb.png");
-    } else {
-      setTargetImage("https://d21ksh0k4smeql.cloudfront.net/crop_1694593694387-4562-0-1694593694575-0526.png");
-      setSourceImage("https://d21ksh0k4smeql.cloudfront.net/crop_1705462509874-9254-0-1705462510015-9261.png");
-    }
-  }, [activeTab]);
-
-  // Add video download handler
-  const handleVideoDownload = async () => {
-    if (!videoResult) return;
-    
-    try {
-      const response = await fetch(videoResult);
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'face-swap-result.mp4';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-    } catch (error) {
-      console.error('Error downloading video:', error);
-      window.open(videoResult, '_blank');
-    }
-  };
+  if (!isAuthenticated) {
+    return <AuthForm onAuth={handleAuth} isLoading={isAuthLoading} />;
+  }
 
   return (
-    <div className="app-container">
-      {!isSubmitted ? (
-        <div className="welcome-container">
-          <div className={`welcome-content ${isSubmitted ? 'fade-out' : 'fade-in'}`}>
-            <div className="title-container">
-              <img src="/images/4p6vr8j7vbom4axo7k0 2.png" alt="Face Swap AI Logo" className="logo" />
-              <h1 className="title">Face Swap AI</h1>
-            </div>
-            <p className="subtitle">Welcome to the next generation of face swapping</p>
-            
-            <div className="auth-method-toggle">
-              <button 
-                className={`auth-toggle-btn ${authMethod === 'token' ? 'active' : ''}`}
-                onClick={() => setAuthMethod('token')}
-              >
-                Use Bearer Token
-              </button>
-              <button 
-                className={`auth-toggle-btn ${authMethod === 'credentials' ? 'active' : ''}`}
-                onClick={() => setAuthMethod('credentials')}
-              >
-                Use Client Credentials
-              </button>
-            </div>
+    <Container>
+      <Header onCheckBalance={handleCheckBalance} isLoading={isBalanceLoading} />
 
-            <form onSubmit={handleSubmit} className="token-form">
-              {authMethod === 'token' ? (
-                <input
-                  type="text"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  placeholder="Enter your API token"
-                  className="token-input"
-                  required
-                />
-              ) : (
-                <>
-                  <input
-                    type="text"
-                    value={clientId}
-                    onChange={(e) => setClientId(e.target.value)}
-                    placeholder="Enter your Client ID"
-                    className="token-input"
-                    required
-                  />
-                  <input
-                    type="password"
-                    value={clientSecret}
-                    onChange={(e) => setClientSecret(e.target.value)}
-                    placeholder="Enter your Client Secret"
-                    className="token-input"
-                    required
-                  />
-                </>
-              )}
-              <button type="submit" className="submit-button">
-                Get Started
-              </button>
-            </form>
+      <div className="space-y-6">
+        <Tabs tabs={tabs} activeTab={activeTab} onChange={(id) => setActiveTab(id as TabType)} />
+
+        {activeTab === 'image' ? (
+          <ImageSwap
+            onSwap={handleImageSwap}
+            webhookUrl={webhookUrl}
+            onWebhookChange={setWebhookUrl}
+            isLoading={isProcessing}
+          />
+        ) : (
+          <VideoSwap
+            onSwap={handleVideoSwap}
+            webhookUrl={webhookUrl}
+            onWebhookChange={setWebhookUrl}
+            isLoading={isProcessing}
+          />
+        )}
+
+        <StatusDisplay status={statusMessage} isLoading={isProcessing} />
+      </div>
+
+      {/* Credit Balance Modal */}
+      <Modal
+        isOpen={showCreditModal}
+        onClose={() => setShowCreditModal(false)}
+        title="Credit Balance"
+      >
+        <div className="text-center py-6">
+          <div className="text-5xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent mb-2">
+            {credit?.toFixed(2)}
           </div>
+          <div className="text-gray-400">Available Credits</div>
         </div>
-      ) : (
-        <div className="main-container">
-          <div className="main-header">
-            <div className="header-left">
-              <img src="/images/4p6vr8j7vbom4axo7k0 2.png" alt="Face Swap AI Logo" className="logo" />
-              <h1 className="title">Face Swap AI</h1>
-            </div>
-            <button 
-              className="balance-button" 
-              onClick={checkTokenBalance}
-              disabled={isBalanceLoading}
-            >
-              {isBalanceLoading ? (
-                <span className="button-loader"></span>
-              ) : (
-                'Check Token Balance'
-              )}
-            </button>
-          </div>
-          <div className="tabs">
-            <button
-              className={`tab ${activeTab === 'image' ? 'active' : ''}`}
-              onClick={() => setActiveTab('image')}
-            >
-              Image Face Swap
-            </button>
-            <button
-              className={`tab ${activeTab === 'video' ? 'active' : ''}`}
-              onClick={() => setActiveTab('video')}
-            >
-              Video Face Swap
-            </button>
-          </div>
-          <div className="tab-content">
-            {activeTab === 'image' ? (
-              <div className="content">
-                <div className="image-swap-form">
-                  <div className="image-input-group">
-                    <h3>Target Image</h3>
-                    <input
-                      type="url"
-                      placeholder="Enter image URL"
-                      value={targetImage}
-                      onChange={(e) => setTargetImage(e.target.value)}
-                      className="url-input"
-                    />
-                  </div>
+      </Modal>
 
-                  <div className="image-input-group">
-                    <h3>Source Image</h3>
-                    <input
-                      type="url"
-                      placeholder="Enter image URL"
-                      value={sourceImage}
-                      onChange={(e) => setSourceImage(e.target.value)}
-                      className="url-input"
-                    />
-                  </div>
-
-                  <div className="checkbox-group">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={isSingleFace}
-                        onChange={(e) => setIsSingleFace(e.target.checked)}
-                      />
-                      Single Face
-                    </label>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={faceEnhance}
-                        onChange={(e) => setFaceEnhance(e.target.checked)}
-                      />
-                      Face Enhance
-                    </label>
-                  </div>
-
-                  <button 
-                    className="swap-button"
-                    onClick={handleSwap}
-                    disabled={!targetImage || !sourceImage || isLoading}
-                  >
-                    Swap Faces
-                  </button>
-                </div>
-
-                {isLoading && (
-                  <div className="loader-overlay">
-                    <div className="loader"></div>
-                    <p>Processing your images...</p>
-                  </div>
-                )}
-
-                {swapResult && (
-                  <div className="result-container">
-                    <h3>Result:</h3>
-                    <img src={swapResult} alt="Face Swap Result" className="result-image" />
-                  </div>
-                )}
-
-                {swapStatus && (
-                  <div className="status-message">
-                    Status: {swapStatus}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="content video-swap-content">
-                <div className="image-swap-form video-form">
-                  <div className="image-input-group">
-                    <h3>Source Image</h3>
-                    <div className="video-input-wrapper">
-                      <i className="image-icon">🖼️</i>
-                      <input
-                        type="url"
-                        placeholder="Enter source image URL"
-                        value={sourceImage}
-                        onChange={(e) => setSourceImage(e.target.value)}
-                        className="url-input video-url-input"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="image-input-group">
-                    <h3>Target Image</h3>
-                    <div className="video-input-wrapper">
-                      <i className="image-icon">🖼️</i>
-                      <input
-                        type="url"
-                        placeholder="Enter target image URL"
-                        value={targetImage}
-                        onChange={(e) => setTargetImage(e.target.value)}
-                        className="url-input video-url-input"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="image-input-group">
-                    <h3>Target Video</h3>
-                    <div className="video-input-wrapper">
-                      <i className="video-icon">🎥</i>
-                      <input
-                        type="url"
-                        placeholder="Enter target video URL"
-                        value={targetVideo}
-                        onChange={(e) => setTargetVideo(e.target.value)}
-                        className="url-input video-url-input"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="video-options">
-                    <label className="video-enhance-toggle">
-                      <input
-                        type="checkbox"
-                        checked={videoFaceEnhance}
-                        onChange={(e) => setVideoFaceEnhance(e.target.checked)}
-                      />
-                      <span className="toggle-label">Face Enhance</span>
-                    </label>
-                  </div>
-
-                  <button 
-                    className="swap-button video-swap-button"
-                    onClick={handleVideoSwap}
-                    disabled={!targetImage || !sourceImage || isLoading}
-                  >
-                    Swap Video Faces
-                  </button>
-                </div>
-
-                {isLoading && (
-                  <div className="loader-overlay">
-                    <div className="loader"></div>
-                    <p>Processing your video...</p>
-                  </div>
-                )}
-
-                {swapStatus && (
-                  <div className="status-message video-status">
-                    Status: {swapStatus}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {showPopup && (
-        <div className="popup">
-          <div className="popup-content">
-            <p>Your current credit balance is:</p>
-            <p className="credit-balance">{credit}</p>
-            <button onClick={() => setShowPopup(false)} className="submit-button">OK</button>
-          </div>
-        </div>
-      )}
-
-      {showResultPopup && swapResult && (
-        <div className="result-popup-overlay">
-          <div className="result-popup">
-            <button 
-              className="close-button"
-              onClick={() => setShowResultPopup(false)}
-            >
-              ×
-            </button>
-            <h2>Face Swap Result</h2>
-            <div className="result-image-container">
-              <img src={swapResult} alt="Face Swap Result" />
-            </div>
-            <div className="result-actions">
-              <button 
-                className="download-button"
-                onClick={handleDownload}
-              >
-                Download Image
-              </button>
-              <button 
-                className="close-popup-button"
-                onClick={() => setShowResultPopup(false)}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showVideoResultPopup && videoResult && (
-        <div className="result-popup-overlay">
-          <div className="result-popup video-result-popup">
-            <button 
-              className="close-button"
-              onClick={() => setShowVideoResultPopup(false)}
-            >
-              ×
-            </button>
-            <h2>Video Face Swap Result</h2>
-            <div className="result-video-container">
-              <video 
-                controls 
-                autoPlay 
-                loop
-                src={videoResult}
-                className="result-video"
-              >
-                Your browser does not support the video tag.
-              </video>
-            </div>
-            <div className="result-actions">
-              <a 
-                href={videoResult}
-                className="download-button"
-                download="face-swap-result.mp4"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Download Video
-              </a>
-              <button 
-                className="close-popup-button"
-                onClick={() => setShowVideoResultPopup(false)}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      {/* Result Modal */}
+      <ResultModal
+        isOpen={showResultModal}
+        onClose={() => setShowResultModal(false)}
+        resultUrl={resultUrl}
+      />
+    </Container>
   );
 }
 
 export default App;
+
+
