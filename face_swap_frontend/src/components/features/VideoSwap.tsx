@@ -1,18 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Card } from '../ui/Card';
+import { apiService } from '../../services/api';
+
+interface DetectedFace {
+  path: string;
+  opts: string;
+}
 
 interface VideoSwapProps {
   onSwap: (config: {
-    sourceImage: string;
-    targetImage: string;
+    sourceImages: string[];
     targetVideo: string;
+    detectedTargetFaces: DetectedFace[];
     faceEnhance: boolean;
   }) => void;
   webhookUrl: string;
   onWebhookChange: (url: string) => void;
   isLoading?: boolean;
+  token?: string;
+  authType?: 'apikey' | 'bearer';
 }
 
 export const VideoSwap: React.FC<VideoSwapProps> = ({
@@ -20,15 +28,129 @@ export const VideoSwap: React.FC<VideoSwapProps> = ({
   webhookUrl,
   onWebhookChange,
   isLoading,
+  token = '',
+  authType = 'apikey',
 }) => {
-  const [sourceImage, setSourceImage] = useState('https://d21ksh0k4smeql.cloudfront.net/crop_1705475757658-3362-0-1705475757797-3713.png');
-  const [targetImage, setTargetImage] = useState('https://d21ksh0k4smeql.cloudfront.net/crop_1705479323786-0321-0-1705479323896-7695.png');
+  // Source images - dynamic array based on detected faces
+  const [sourceImages, setSourceImages] = useState<string[]>([
+    'https://d21ksh0k4smeql.cloudfront.net/crop_1705475757658-3362-0-1705475757797-3713.png'
+  ]);
+  
+  // Target video and reference image
   const [targetVideo, setTargetVideo] = useState('https://d21ksh0k4smeql.cloudfront.net/avatar_01-1705479314627-0092.mp4');
+  const [targetReferenceImage, setTargetReferenceImage] = useState('https://d21ksh0k4smeql.cloudfront.net/crop_1705479323786-0321-0-1705479323896-7695.png');
+  
   const [faceEnhance, setFaceEnhance] = useState(true);
+  
+  // Face detection state for video
+  const [detectedTargetFaces, setDetectedTargetFaces] = useState<DetectedFace[]>([]);
+  const [detectedFaceCount, setDetectedFaceCount] = useState<number>(1);
+  const [isDetectingVideo, setIsDetectingVideo] = useState(false);
+  const [videoDetectionError, setVideoDetectionError] = useState<string>('');
+
+  // Detect faces in target reference image (represents video faces)
+  const detectVideoFaces = useCallback(async (imageUrl: string) => {
+    if (!imageUrl || !token) return;
+    
+    setIsDetectingVideo(true);
+    setVideoDetectionError('');
+    
+    try {
+      const response = await apiService.detectFace(
+        { single_face: false, image_url: imageUrl },
+        token,
+        authType
+      ) as { landmarks_str: string | string[] };
+      
+      const landmarksArray = Array.isArray(response.landmarks_str) 
+        ? response.landmarks_str 
+        : [response.landmarks_str];
+      
+      const faceCount = landmarksArray.filter(l => l && l.trim()).length;
+      
+      if (faceCount === 0) {
+        setVideoDetectionError('No faces detected in reference image. Please try another frame from the video.');
+        setDetectedFaceCount(1);
+        setDetectedTargetFaces([]);
+        setSourceImages(['']);
+      } else if (faceCount > 8) {
+        setVideoDetectionError(`Detected ${faceCount} faces. API supports max 8. Using first 8.`);
+        const limitedLandmarks = landmarksArray.slice(0, 8);
+        setDetectedFaceCount(8);
+        setDetectedTargetFaces(limitedLandmarks.map(opts => ({ 
+          path: imageUrl, 
+          opts: opts.split(':').slice(0, 4).join(':') // First 4 points only
+        })));
+        setSourceImages(Array(8).fill(''));
+      } else {
+        setDetectedFaceCount(faceCount);
+        setDetectedTargetFaces(landmarksArray.map(opts => ({ 
+          path: imageUrl, 
+          opts: opts.split(':').slice(0, 4).join(':') // First 4 points only
+        })));
+        // Preserve existing source URLs if available
+        setSourceImages(prev => {
+          const newSources = Array(faceCount).fill('');
+          for (let i = 0; i < Math.min(prev.length, faceCount); i++) {
+            newSources[i] = prev[i] || '';
+          }
+          return newSources;
+        });
+      }
+    } catch (error) {
+      console.error('Video face detection failed:', error);
+      setVideoDetectionError('Face detection failed. Please check the reference image or try again.');
+      setDetectedFaceCount(1);
+      setDetectedTargetFaces([]);
+      setSourceImages(['']);
+    } finally {
+      setIsDetectingVideo(false);
+    }
+  }, [token, authType]);
+
+  // Trigger face detection when target reference image changes
+  useEffect(() => {
+    let timeoutId: number;
+    
+    if (targetReferenceImage && token) {
+      // Debounce by 800ms
+      timeoutId = window.setTimeout(() => {
+        detectVideoFaces(targetReferenceImage);
+      }, 800);
+    }
+    
+    return () => window.clearTimeout(timeoutId);
+  }, [targetReferenceImage, token, detectVideoFaces]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSwap({ sourceImage, targetImage, targetVideo, faceEnhance });
+    
+    // Validate all source images are filled
+    if (sourceImages.some(s => !s.trim())) {
+      alert(`Please provide all ${detectedFaceCount} source face images`);
+      return;
+    }
+    
+    // Validate we have detected faces
+    if (detectedTargetFaces.length === 0) {
+      alert('Please wait for face detection to complete or provide a valid reference image');
+      return;
+    }
+    
+    onSwap({ 
+      sourceImages, 
+      targetVideo, 
+      detectedTargetFaces,
+      faceEnhance 
+    });
+  };
+
+  const updateSourceImage = (index: number, value: string) => {
+    setSourceImages(prev => {
+      const newSources = [...prev];
+      newSources[index] = value;
+      return newSources;
+    });
   };
 
   return (
@@ -48,96 +170,128 @@ export const VideoSwap: React.FC<VideoSwapProps> = ({
           }
         />
 
-        {/* Image Inputs with Previews */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-gray-300 text-sm">
-              <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-              <span className="font-medium">Source Image</span>
-            </div>
-            <div className="flex gap-3 items-center">
-              <div className="flex-1">
-                <Input
-                  type="url"
-                  value={sourceImage}
-                  onChange={(e) => setSourceImage(e.target.value)}
-                  placeholder="Face to swap in"
-                  required
-                />
+        {/* Target Reference Image for Face Detection */}
+        <Card className="p-4 sm:p-6">
+          <div className="flex gap-3 items-start">
+            <div className="flex-1">
+              <Input
+                label="Target Reference Image (Frame from video)"
+                type="url"
+                value={targetReferenceImage}
+                onChange={(e) => setTargetReferenceImage(e.target.value)}
+                placeholder="https://example.com/video-frame.jpg"
+                required
+              />
+              <div className="mt-2">
+                {isDetectingVideo && (
+                  <p className="text-xs text-blue-400 flex items-center gap-2">
+                    <svg className="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Detecting faces in video frame...
+                  </p>
+                )}
+                {!isDetectingVideo && detectedFaceCount > 0 && !videoDetectionError && (
+                  <p className="text-xs text-green-400 flex items-center gap-2">
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Detected {detectedFaceCount} face{detectedFaceCount > 1 ? 's' : ''} in video - provide {detectedFaceCount} source image{detectedFaceCount > 1 ? 's' : ''} below
+                  </p>
+                )}
+                {videoDetectionError && (
+                  <p className="text-xs text-yellow-400 flex items-center gap-2">
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {videoDetectionError}
+                  </p>
+                )}
               </div>
-              {sourceImage && (
-                <div className="flex-shrink-0 w-20 h-20">
-                  <div className="relative w-full h-full overflow-hidden rounded-lg bg-gray-800 border border-gray-700">
-                    <img
-                      src={sourceImage}
-                      alt="Source preview"
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                        (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
-                      }}
-                      onLoad={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'block';
-                        (e.target as HTMLImageElement).nextElementSibling?.classList.add('hidden');
-                      }}
-                    />
-                    <div className="hidden absolute inset-0 flex items-center justify-center text-gray-500">
-                      <svg className="w-6 h-6 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </div>
+            </div>
+            {targetReferenceImage && (
+              <div className="flex-shrink-0 w-20 h-20 mt-7">
+                <div className="relative w-full h-full overflow-hidden rounded-lg bg-gray-800 border border-gray-700">
+                  <img
+                    src={targetReferenceImage}
+                    alt="Reference preview"
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                      (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                    }}
+                    onLoad={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'block';
+                      (e.target as HTMLImageElement).nextElementSibling?.classList.add('hidden');
+                    }}
+                  />
+                  <div className="hidden absolute inset-0 flex items-center justify-center text-gray-500">
+                    <svg className="w-6 h-6 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* Source Images - Dynamic based on detected faces */}
+        <Card className="p-4 sm:p-6">
+          <div className="mb-3">
+            <h3 className="text-sm font-medium text-gray-200 flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Source {detectedFaceCount > 1 ? 'Faces' : 'Face'} ({detectedFaceCount} required)
+            </h3>
+            <p className="text-xs text-gray-400 mt-1">
+              Provide pre-cropped single-face images for each detected face in the video
+            </p>
           </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-gray-300 text-sm">
-              <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-              <span className="font-medium">Target Image</span>
-            </div>
-            <div className="flex gap-3 items-center">
-              <div className="flex-1">
-                <Input
-                  type="url"
-                  value={targetImage}
-                  onChange={(e) => setTargetImage(e.target.value)}
-                  placeholder="Frame from video"
-                  required
-                />
-              </div>
-              {targetImage && (
-                <div className="flex-shrink-0 w-20 h-20">
-                  <div className="relative w-full h-full overflow-hidden rounded-lg bg-gray-800 border border-gray-700">
-                    <img
-                      src={targetImage}
-                      alt="Target preview"
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                        (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
-                      }}
-                      onLoad={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'block';
-                        (e.target as HTMLImageElement).nextElementSibling?.classList.add('hidden');
-                      }}
-                    />
-                    <div className="hidden absolute inset-0 flex items-center justify-center text-gray-500">
-                      <svg className="w-6 h-6 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
+          <div className="space-y-4">
+            {sourceImages.map((source, index) => (
+              <div key={index} className="flex gap-3 items-start">
+                <div className="flex-1">
+                  <Input
+                    label={`Source Face ${index + 1}${detectedFaceCount > 1 ? ` → Video Face ${index + 1}` : ''}`}
+                    type="url"
+                    value={source}
+                    onChange={(e) => updateSourceImage(index, e.target.value)}
+                    placeholder={`https://example.com/source-${index + 1}.jpg (pre-cropped face)`}
+                    required
+                  />
+                </div>
+                {source && (
+                  <div className="flex-shrink-0 w-20 h-20 mt-7">
+                    <div className="relative w-full h-full overflow-hidden rounded-lg bg-gray-800 border border-purple-500/50">
+                      <img
+                        src={source}
+                        alt={`Source ${index + 1} preview`}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                          (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                        }}
+                        onLoad={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'block';
+                          (e.target as HTMLImageElement).nextElementSibling?.classList.add('hidden');
+                        }}
+                      />
+                      <div className="hidden absolute inset-0 flex items-center justify-center text-gray-500">
+                        <svg className="w-6 h-6 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            ))}
           </div>
-        </div>
+        </Card>
 
         {/* Video Input with Preview */}
         <div className="space-y-3">
@@ -212,8 +366,14 @@ export const VideoSwap: React.FC<VideoSwapProps> = ({
           className="w-full"
           size="lg"
           variant="secondary"
-          isLoading={isLoading}
-          disabled={!sourceImage || !targetImage || !targetVideo}
+          isLoading={isLoading || isDetectingVideo}
+          disabled={
+            !targetVideo || 
+            !targetReferenceImage || 
+            sourceImages.some(s => !s.trim()) || 
+            isDetectingVideo ||
+            detectedTargetFaces.length === 0
+          }
         >
           <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />

@@ -21,7 +21,7 @@ function App() {
 
   // UI State
   const [activeTab, setActiveTab] = useState<TabType>('image-v3');
-  const [webhookUrl, setWebhookUrl] = useState('https://restaurant-site-highlights-clinic.trycloudflare.com/api/webhook');
+  const [webhookUrl, setWebhookUrl] = useState('https://foot-urw-soa-medications.trycloudflare.com/api/webhook');
   const [isBalanceLoading, setIsBalanceLoading] = useState(false);
   const [credit, setCredit] = useState<number | null>(null);
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -191,11 +191,11 @@ function App() {
     }
   };
 
-  // Video Swap Handler
+  // Video Swap Handler with Multi-Face Support
   const handleVideoSwap = async (config: {
-    sourceImage: string;
-    targetImage: string;
+    sourceImages: string[];
     targetVideo: string;
+    detectedTargetFaces: Array<{ path: string; opts: string }>;
     faceEnhance: boolean;
   }) => {
     setIsProcessing(true);
@@ -203,47 +203,71 @@ function App() {
     setResultUrl(null);
 
     try {
-      setStatusMessage('Detecting faces...');
+      setStatusMessage('Detecting faces in source images...');
 
-      const [sourceDetection, targetDetection] = await Promise.all([
-        apiService.detectFace(
-          { single_face: false, image_url: config.sourceImage },
-          token,
-          authType
-        ),
-        apiService.detectFace(
-          { single_face: false, image_url: config.targetImage },
-          token,
-          authType
-        ),
-      ]);
+      // Detect faces in all source images to get their landmarks
+      const sourceDetections = await Promise.all(
+        config.sourceImages.map(img =>
+          apiService.detectFace(
+            { single_face: false, image_url: img },
+            token,
+            authType
+          )
+        )
+      );
 
-      const sourceData = sourceDetection as { landmarks_str: string | string[] };
-      const targetData = targetDetection as { landmarks_str: string | string[] };
+      // Extract landmarks for each source (first 4 points only)
+      const sourceLandmarks = sourceDetections.map(result => {
+        const data = result as { landmarks_str: string | string[] };
+        const landmarks = Array.isArray(data.landmarks_str) ? data.landmarks_str[0] : data.landmarks_str;
+        return landmarks.split(':').slice(0, 4).join(':');
+      });
 
-      const sourceOpts = Array.isArray(sourceData.landmarks_str)
-        ? sourceData.landmarks_str[0]
-        : sourceData.landmarks_str;
-      const targetOpts = Array.isArray(targetData.landmarks_str)
-        ? targetData.landmarks_str[0]
-        : targetData.landmarks_str;
+      // Validate equal array lengths
+      if (sourceLandmarks.length !== config.detectedTargetFaces.length) {
+        throw new Error(
+          `Array length mismatch: ${sourceLandmarks.length} source face(s) but ${config.detectedTargetFaces.length} target face(s). ` +
+          `Must be equal for video face swap.`
+        );
+      }
 
-      setStatusMessage('Faces detected, processing video...');
+      setStatusMessage('Faces detected, processing video (this may take several minutes)...');
 
+      // Build payload with matching arrays (CRITICAL: opts must be strings, not arrays)
       const swapData = {
-        sourceImage: [{ path: config.sourceImage, opts: sourceOpts }],
-        targetImage: [{ path: config.targetImage, opts: targetOpts }],
+        sourceImage: config.sourceImages.map((path, i) => ({
+          path,
+          opts: sourceLandmarks[i] // String: "x1,y1:x2,y2:x3,y3:x4,y4"
+        })),
+        targetImage: config.detectedTargetFaces.map(face => ({
+          path: face.path,
+          opts: face.opts // String: "x1,y1:x2,y2:x3,y3:x4,y4"
+        })),
         face_enhance: config.faceEnhance ? 1 : 0,
-        modifyVideo: config.targetVideo,
+        modifyVideo: config.targetVideo, // Full video URL
         webhookUrl,
       };
 
+      // Validate opts are strings (prevent error 1003)
+      const invalidOpts = [...swapData.sourceImage, ...swapData.targetImage].find(
+        item => typeof item.opts !== 'string'
+      );
+      if (invalidOpts) {
+        throw new Error('opts must be string, not array (error 1003 prevention)');
+      }
+
       await apiService.faceSwapV3Video(swapData, token, authType);
-      setStatusMessage('Video processing started, this may take a while...');
+      setStatusMessage('Video processing started successfully. Waiting for webhook response...');
     } catch (error) {
       console.error('Video swap failed:', error);
-      setStatusMessage(error instanceof Error ? error.message : 'Video swap failed');
+      const errorMsg = error instanceof Error ? error.message : 'Video swap failed';
+      setStatusMessage(errorMsg);
       setIsProcessing(false);
+      
+      // Show helpful error for common issues
+      if (errorMsg.includes('1003')) {
+        alert('Error 1003: opts must be a string. This is a payload formatting issue.');
+      }
     }
   };
 
@@ -303,6 +327,8 @@ function App() {
             webhookUrl={webhookUrl}
             onWebhookChange={setWebhookUrl}
             isLoading={isProcessing}
+            token={token}
+            authType={authType}
           />
         )}
 
